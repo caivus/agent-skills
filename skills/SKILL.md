@@ -1,0 +1,159 @@
+---
+name: sage
+description: AI 技能库总入口。按任务类型选择专业技能。当用户需要任何开发、安全、架构、DevOps、AI 相关能力时，通过此入口路由到最匹配的专业技能。
+license: MIT
+user-invocable: false
+disable-model-invocation: false
+---
+
+# 技能库 · 总览
+
+## 目录结构
+
+```
+skills/
+├── domains/          # 领域技能
+│   ├── security/     # 安全技能 (7篇)
+│   ├── development/  # 开发指南 (7篇)
+│   ├── architecture/ # 架构设计 (5篇)
+│   ├── devops/       # 工程运维 (7篇)
+│   ├── ai/           # AI 工程 (4篇)
+│   ├── frontend-design/ # 界面设计 (8篇)
+│   ├── data-engineering/ # 数据工程 (合并版)
+│   ├── infrastructure/   # 基础设施 (合并版)
+│   ├── mobile/           # 移动开发 (合并版)
+│   └── orchestration/    # 协作指南
+├── tools/            # 辅助工具
+│   ├── verify-module/
+│   ├── verify-security/
+│   ├── verify-change/
+│   ├── verify-quality/
+│   └── gen-docs/
+├── orchestration/    # 协同执行引擎
+│   └── multi-agent/
+├── run_skill.js
+└── SKILL.md
+```
+
+## 快速导航
+
+| 领域 | 说明 | 入口 |
+|------|------|------|
+| 🛡️ **质量检查** | 模块完整性、安全、质量、变更校验 | [质量检查](#质量检查) |
+| ⚔️ **安全技能** | 渗透测试、红队、蓝队、威胁情报 | [安全技能](#安全技能) |
+| 📜 **开发指南** | Python、Go、Rust、TypeScript、Java | [开发指南](#开发指南) |
+| 🏗️ **架构设计** | API 设计、安全架构、云原生 | [架构设计](#架构设计) |
+| 🔧 **工程运维** | Git、测试、DevSecOps、数据库、性能、可观测性、成本 | [工程运维](#工程运维) |
+| 🤖 **AI 工程** | Agent 开发、LLM 安全 | [AI 工程](#ai-工程) |
+| 🎨 **界面设计** | UI美学、组件模式、UX原则 | [界面设计](#界面设计) |
+| 🤝 **多 Agent 协作** | 多Agent协同、任务分解、冲突解决 | [多 Agent 协作](#多-agent-协作) |
+
+---
+
+## 质量检查
+
+**强制执行的质量关卡，确保交付物符合质量标准。**
+
+| 技能 | 触发条件 | 说明 |
+|------|----------|------|
+| `/verify-module` | 新建模块完成时 | 模块结构与文档完整性校验 |
+| `/verify-security` | 新建/安全相关/攻防/重构完成时 | 安全漏洞扫描 |
+| `/verify-change` | 设计级变更/重构完成时 | 文档同步与变更记录校验 |
+| `/verify-quality` | 复杂模块/重构完成时 | 代码质量检查 |
+| `/gen-docs` | 新建模块开始时 | 文档骨架生成 |
+
+### 自动触发规则
+
+```
+新建模块：/gen-docs → 开发 → /verify-module → /verify-security
+代码变更：开发 → /verify-change → /verify-quality
+安全任务：执行 → /verify-security
+重构任务：重构 → /verify-change → /verify-quality → /verify-security
+```
+
+---
+
+## 安全技能
+
+| 技能 | 触发词 | 说明 |
+|------|--------|------|
+| `red-team` | 渗透、红队、攻击链、C2、横向移动、供应链 | 红队攻击技术（含供应链安全） |
+| `pentest` | 渗透测试、Web安全、API安全、漏洞挖掘 | 全栈渗透测试 |
+| `code-audit` | 代码审计、安全审计、危险函数、污点分析 | 代码安全审计 |
+| `vuln-research` | 漏洞研究、二进制、逆向、Exploit | 漏洞研究与利用 |
+| `blue-team` | 蓝队、检测、SOC、应急响应、取证、密钥管理 | 蓝队防御技术（含密钥管理） |
+| `threat-intel` | 威胁情报、OSINT、威胁狩猎、情报分析、威胁建模 | 威胁情报分析（含威胁建模） |
+
+---
+
+## 开发指南
+
+| 技能 | 触发词 | 说明 |
+|------|--------|------|
+| `python` | Python、Django、Flask、FastAPI、pytest | Python 开发全栈 |
+| `go` | Go、Golang、Gin、Echo | Go 开发 |
+| `rust` | Rust、Cargo、tokio | Rust 开发 |
+| `typescript` | TypeScript、JavaScript、Node、React、Vue | 前后端 JS/TS 开发 |
+| `java` | Java、Spring、Maven、Gradle | Java 开发 |
+| `cpp` | C、C++、CMake、内存安全 | C/C++ 开发 |
+| `shell` | Bash、Shell、脚本、自动化 | Shell 脚本开发 |
+
+---
+
+## 架构设计
+
+| 技能 | 触发词 | 说明 |
+|------|--------|------|
+| `api-design` | API设计、RESTful、GraphQL、OpenAPI | API 设计规范 |
+| `security-arch` | 安全架构、零信任、IAM、数据安全、合规、GDPR | 安全架构设计（含数据安全与合规） |
+| `cloud-native` | 云原生、容器、Kubernetes、Serverless | 云原生架构 |
+| `message-queue` | 消息队列、Kafka、RabbitMQ、事件驱动、CQRS | 消息队列架构 |
+| `caching` | 缓存、Redis、CDN、缓存穿透、缓存雪崩 | 缓存策略设计 |
+
+---
+
+## 工程运维
+
+| 技能 | 触发词 | 说明 |
+|------|--------|------|
+| `git-workflow` | Git、分支、合并、PR、GitHub | Git 工作流 |
+| `testing` | 测试、单元测试、pytest、Jest、TDD | 软件测试 |
+| `devsecops` | DevSecOps、CI/CD、供应链安全、合规 | 安全开发运维 |
+| `database` | 数据库、SQL、PostgreSQL、MongoDB | 数据库设计与优化 |
+| `performance` | 性能、延迟、吞吐、Profiling、火焰图 | 性能优化 |
+| `observability` | 可观测性、日志、监控、指标、追踪、SLO | 可观测性 |
+| `cost-optimization` | 成本、FinOps、预算、账单、省钱 | 成本优化 |
+
+---
+
+## AI 工程
+
+| 技能 | 触发词 | 说明 |
+|------|--------|------|
+| `agent-dev` | Agent、LLM应用、RAG | AI Agent 开发 |
+| `llm-security` | LLM安全、提示注入、AI红队 | LLM 安全测试 |
+| `rag-system` | RAG、检索增强、向量数据库 | RAG 系统设计 |
+| `prompt-and-eval` | Prompt工程、模型评估、基准测试 | Prompt 工程与模型评估 |
+
+---
+
+## 界面设计
+
+| 技能 | 触发词 | 说明 |
+|------|--------|------|
+| `ui-aesthetics` | UI美学、色彩、排版、间距、设计令牌、暗色模式 | UI 美学设计 |
+| `component-patterns` | 组件模式、布局、响应式、动画、表单、卡片 | 组件设计模式 |
+| `ux-principles` | UX原则、可用性、无障碍、用户流程、反馈 | UX 设计原则 |
+| `frontend-engineering` | 构建工具、前端测试、性能优化、Vite、Webpack | 前端工程化 |
+| `claymorphism` | Claymorphism、软陶、大圆角、双内阴影 | 软陶设计风格 |
+| `glassmorphism` | Glassmorphism、毛玻璃、模糊、透明 | 毛玻璃设计风格 |
+| `neubrutalism` | Neubrutalism、粗野、粗边框、高饱和 | 新粗野主义风格 |
+| `liquid-glass` | Liquid Glass、Apple、半透明、深度感知 | Apple 液态玻璃风格 |
+
+---
+
+## 多 Agent 协作
+
+| 技能 | 触发词 | 说明 |
+|------|--------|------|
+| `multi-agent` | TeamCreate、多Agent、并行、协同、分工 | 多Agent协同规范 |
