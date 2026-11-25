@@ -31,6 +31,13 @@
 
 ## 使用方式
 
+先克隆仓库：
+
+```bash
+git clone https://github.com/caivus/agent-skills.git
+cd agent-skills
+```
+
 ### 1. 按需读取技能
 
 从 [技能目录](CATALOG.md) 选择相关条目，让 AI 助手读取对应 `SKILL.md`；如文档引用 `references/` 或 `scripts/`，保留这些相对路径。
