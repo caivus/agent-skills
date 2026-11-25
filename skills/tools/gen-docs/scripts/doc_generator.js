@@ -6,6 +6,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { validateDirectory, printCliError } = require('../../lib/shared');
 
 // --- Utilities ---
 
@@ -345,34 +346,41 @@ function generateDesign(info) {
 
 // --- Core: generate_docs ---
 
-function generateDocs(targetPath, force) {
-  const modPath = path.resolve(targetPath);
+// Keep generateDocs(targetPath, force) compatible; selection is an optional third argument.
+function generateDocs(targetPath, force, options = {}) {
   const result = { readme: null, design: null, status: 'success', messages: [] };
+  if (options.readmeOnly && options.designOnly) {
+    const error = new Error('--readme-only 和 --design-only 不能同时使用');
+    error.code = 'INVALID_ARGUMENT';
+    throw error;
+  }
 
-  if (!fs.existsSync(modPath)) {
+  let modPath;
+  try {
+    modPath = validateDirectory(targetPath);
+  } catch (error) {
+    // Preserve the module API's error result for invalid targets.
     result.status = 'error';
-    result.messages.push(`路径不存在: ${modPath}`);
+    result.messages.push(error.message);
     return result;
   }
 
   const info = analyzeModule(modPath);
+  const documents = [];
+  if (!options.designOnly) documents.push(['readme', 'README.md', generateReadme]);
+  if (!options.readmeOnly) documents.push(['design', 'DESIGN.md', generateDesign]);
 
-  const readmePath = path.join(modPath, 'README.md');
-  if (fs.existsSync(readmePath) && !force) {
-    result.messages.push('README.md 已存在，跳过（使用 --force 覆盖）');
-  } else {
-    fs.writeFileSync(readmePath, generateReadme(info));
-    result.readme = readmePath;
-    result.messages.push('已生成 README.md');
-  }
-
-  const designPath = path.join(modPath, 'DESIGN.md');
-  if (fs.existsSync(designPath) && !force) {
-    result.messages.push('DESIGN.md 已存在，跳过（使用 --force 覆盖）');
-  } else {
-    fs.writeFileSync(designPath, generateDesign(info));
-    result.design = designPath;
-    result.messages.push('已生成 DESIGN.md');
+  for (const [key, name, generate] of documents) {
+    const filePath = path.join(modPath, name);
+    try {
+      // Exclusive creation also protects existing files if another writer wins a race.
+      fs.writeFileSync(filePath, generate(info), { flag: force ? 'w' : 'wx' });
+      result[key] = filePath;
+      result.messages.push(`已生成 ${name}`);
+    } catch (error) {
+      if (error.code !== 'EEXIST' || force) throw error;
+      result.messages.push(`${name} 已存在，跳过（使用 --force 覆盖）`);
+    }
   }
 
   return result;
@@ -383,38 +391,68 @@ function generateDocs(targetPath, force) {
 function parseArgs(argv) {
   const args = { path: '.', force: false, json: false, readmeOnly: false, designOnly: false };
   const rest = argv.slice(2);
+  const separator = rest.indexOf('--');
+  const flags = separator < 0 ? rest : rest.slice(0, separator);
+  // Help never analyzes or writes the target, even alongside other options.
+  if (flags.includes('-h') || flags.includes('--help')) {
+    return { ...args, help: true, json: flags.includes('--json') };
+  }
+  const fail = message => {
+    const error = new Error(message);
+    error.code = 'INVALID_ARGUMENT';
+    error.json = flags.includes('--json');
+    throw error;
+  };
   const positional = [];
+  let optionsEnded = false;
   for (const a of rest) {
-    if (a === '-f' || a === '--force') args.force = true;
+    if (optionsEnded) positional.push(a);
+    else if (a === '--') optionsEnded = true;
+    else if (a === '-f' || a === '--force') args.force = true;
     else if (a === '--json') args.json = true;
     else if (a === '--readme-only') args.readmeOnly = true;
     else if (a === '--design-only') args.designOnly = true;
-    else if (a === '-h' || a === '--help') {
-      console.log('Usage: doc_generator.js [path] [-f|--force] [--json] [--readme-only] [--design-only]');
-      process.exit(0);
-    } else positional.push(a);
+    else if (a.startsWith('-')) fail(`未知参数: ${a}`);
+    else positional.push(a);
   }
-  if (positional.length) args.path = positional[0];
+  if (positional.length > 1) fail('只能指定一个目标路径');
+  if (positional.length) {
+    if (!positional[0]) fail('目标路径不能为空');
+    args.path = positional[0];
+  }
+  if (args.readmeOnly && args.designOnly) fail('--readme-only 和 --design-only 不能同时使用');
   return args;
 }
 
 function main() {
-  const args = parseArgs(process.argv);
-  const result = generateDocs(args.path, args.force);
-
-  if (args.json) {
-    process.stdout.write(JSON.stringify(result, null, 2) + '\n');
-  } else {
-    console.log('='.repeat(50));
-    console.log('文档生成报告');
-    console.log('='.repeat(50));
-    for (const msg of result.messages) {
-      console.log(`  \u2022 ${msg}`);
+  let args;
+  try {
+    args = parseArgs(process.argv);
+    if (args.help) {
+      console.log('Usage: doc_generator.js [path] [-f|--force] [--json] [--readme-only | --design-only]');
+      process.exitCode = 0;
+      return;
     }
-    console.log('='.repeat(50));
-  }
+    // Validate here for coded CLI errors; generateDocs retains its legacy error result.
+    const target = validateDirectory(args.path);
+    const result = generateDocs(target, args.force, args);
 
-  process.exitCode = result.status === 'success' ? 0 : 1;
+    if (args.json) {
+      process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+    } else {
+      console.log('='.repeat(50));
+      console.log('文档生成报告');
+      console.log('='.repeat(50));
+      for (const msg of result.messages) {
+        console.log(`  \u2022 ${msg}`);
+      }
+      console.log('='.repeat(50));
+    }
+
+    process.exitCode = result.status === 'success' ? 0 : 1;
+  } catch (error) {
+    printCliError(error, Boolean((args && args.json) || error.json));
+  }
 }
 
 if (require.main === module) {

@@ -4,7 +4,7 @@
 const { execFileSync } = require("child_process");
 const path = require("path");
 const fs = require("fs");
-const { parseCliArgs, buildReport, hasFatal, DASH } = require(path.join(__dirname, '..', '..', 'lib', 'shared.js'));
+const { parseCliArgs, buildReport, validateDirectory, printCliError, DASH } = require(path.join(__dirname, '..', '..', 'lib', 'shared.js'));
 
 const CODE_EXT = new Set([".py",".go",".rs",".ts",".js",".jsx",".tsx",".java",".c",".cpp",".h",".hpp"]);
 const DOC_EXT = new Set([".md",".rst",".txt",".adoc"]);
@@ -61,20 +61,28 @@ function parsePorcelainLine(line) {
   return c;
 }
 
-function git(...args) {
-  try { return execFileSync('git', args, { encoding: "utf8", stdio: ["pipe","pipe","pipe"] }); }
-  catch { return ""; }
+function git(directory, ...args) {
+  try {
+    return execFileSync('git', ['-C', directory, ...args], {
+      encoding: "utf8", stdio: ["pipe", "pipe", "pipe"],
+    });
+  } catch (cause) {
+    const detail = String(cause.stderr || cause.message).trim();
+    const error = new Error(`Git ${args.join(' ')} failed in ${directory}: ${detail}`);
+    error.code = cause.code === 'ENOENT' ? 'GIT_NOT_FOUND' : 'GIT_ERROR';
+    throw error;
+  }
 }
 
-function getGitChanges(base = "HEAD~1", target = "HEAD") {
+function getGitChanges(directory, base = "HEAD~1", target = "HEAD") {
   const changes = [];
-  for (const line of git('diff', '--name-status', base, target).split("\n")) {
+  for (const line of git(directory, 'diff', '--name-status', base, target).split("\n")) {
     if (!line) continue;
     const c = parseNameStatusLine(line);
     if (c) changes.push(c);
   }
   const statMap = {};
-  for (const line of git('diff', '--numstat', base, target).split("\n")) {
+  for (const line of git(directory, 'diff', '--numstat', base, target).split("\n")) {
     if (!line) continue;
     const parts = line.split("\t");
     if (parts.length >= 3) {
@@ -90,9 +98,9 @@ function getGitChanges(base = "HEAD~1", target = "HEAD") {
   return changes;
 }
 
-function getStagedChanges() {
+function getStagedChanges(directory) {
   const changes = [];
-  for (const line of git('diff', '--cached', '--name-status').split("\n")) {
+  for (const line of git(directory, 'diff', '--cached', '--name-status').split("\n")) {
     if (!line) continue;
     const c = parseNameStatusLine(line);
     if (c) changes.push(c);
@@ -100,9 +108,9 @@ function getStagedChanges() {
   return changes;
 }
 
-function getWorkingChanges() {
+function getWorkingChanges(directory) {
   const changes = [];
-  for (const line of git('status', '--porcelain').split("\n")) {
+  for (const line of git(directory, 'status', '--porcelain').split("\n")) {
     if (!line) continue;
     const c = parsePorcelainLine(line);
     if (c) changes.push(c);
@@ -116,7 +124,7 @@ function isPathInModule(filePath, mod) {
   return np === mod || np.startsWith(mod + "/");
 }
 
-function identifyModules(changes) {
+function identifyModules(changes, directory = ".") {
   const modules = new Set();
   for (const c of changes) {
     const np = normalizePath(c.path);
@@ -125,7 +133,7 @@ function identifyModules(changes) {
     let found = false;
     for (let i = 0; i < parts.length; i++) {
       const mp = parts.slice(0, i + 1).join("/");
-      if (fs.existsSync(path.join(mp, "README.md")) || fs.existsSync(path.join(mp, "DESIGN.md"))) {
+      if (fs.existsSync(path.join(directory, mp, "README.md")) || fs.existsSync(path.join(directory, mp, "DESIGN.md"))) {
         modules.add(mp); found = true; break;
       }
     }
@@ -201,16 +209,29 @@ function analyzeImpact(changes) {
   return issues;
 }
 
-function analyzeChanges(mode = "working") {
+function analyzeChanges(mode = "working", target = ".") {
+  if (!["working", "staged", "committed"].includes(mode)) {
+    const error = new Error(`Unsupported mode "${mode}". Use --mode working, staged, or committed.`);
+    error.code = 'INVALID_MODE';
+    throw error;
+  }
+  // Honor the shared positional target without changing the caller's cwd.
+  const directory = validateDirectory(target);
+  if (git(directory, 'rev-parse', '--is-inside-work-tree').trim() !== 'true') {
+    const error = new Error(`Not a Git working tree: ${directory}. Choose a non-bare repository directory.`);
+    error.code = 'NOT_GIT_WORK_TREE';
+    throw error;
+  }
+
   let changes;
-  if (mode === "staged") changes = getStagedChanges();
-  else if (mode === "committed") changes = getGitChanges();
-  else changes = getWorkingChanges();
+  if (mode === "staged") changes = getStagedChanges(directory);
+  else if (mode === "committed") changes = getGitChanges(directory);
+  else changes = getWorkingChanges(directory);
 
   const issues = [];
   let modules = new Set(), docStatus = {};
   if (changes.length) {
-    modules = identifyModules(changes);
+    modules = identifyModules(changes, directory);
     const ds = checkDocSync(changes, modules);
     docStatus = ds.docStatus;
     issues.push(...ds.issues, ...analyzeImpact(changes));
@@ -257,33 +278,60 @@ function formatReport(r, verbose) {
   return report;
 }
 
-// CLI
+function printUsage() {
+  console.log(`Usage: node change_analyzer.js [target] [options]
+
+Analyze a Git working tree (target defaults to the current directory).
+
+Options:
+  --mode working|staged|committed
+      working: git status --porcelain (default)
+      staged: git diff --cached --name-status (also works before the first commit)
+      committed: git diff HEAD~1 HEAD (requires two commits)
+  --json          Print the report or operational error as JSON
+  -v, --verbose   Show individual changed files
+  -h, --help      Show this help without inspecting the target or running Git`);
+}
+
+// CLI: help takes precedence, even for a missing target or invalid mode.
 if (require.main === module) {
-  const opts = parseCliArgs(process.argv);
-  const result = analyzeChanges(opts.mode || "working");
-
-  if (opts.json) {
-    console.log(JSON.stringify({
-      passed: result.passed,
-      total_additions: result.totalAdd,
-      total_deletions: result.totalDel,
-      affected_modules: [...result.modules],
-      changes: result.changes.map(c => ({
-        path: c.path, type: c.type, additions: c.additions,
-        deletions: c.deletions, is_code: c.is_code,
-        is_doc: c.is_doc, is_test: c.is_test
-      })),
-      issues: result.issues.map(i => ({
-        severity: i.severity, message: i.message,
-        related_files: i.related_files,
-      })),
-      doc_sync_status: result.docStatus,
-    }, null, 2));
+  const args = process.argv.slice(2);
+  const separator = args.indexOf('--');
+  const flags = separator < 0 ? args : args.slice(0, separator);
+  if (flags.some(arg => arg === '--help' || arg === '-h')) {
+    printUsage();
   } else {
-    console.log(formatReport(result, opts.verbose));
-  }
+    let opts;
+    try {
+      opts = parseCliArgs(process.argv);
+      const result = analyzeChanges(opts.mode || "working", opts.target);
 
-  process.exit(result.passed ? 0 : 1);
+      if (opts.json) {
+        console.log(JSON.stringify({
+          passed: result.passed,
+          total_additions: result.totalAdd,
+          total_deletions: result.totalDel,
+          affected_modules: [...result.modules],
+          changes: result.changes.map(c => ({
+            path: c.path, type: c.type, additions: c.additions,
+            deletions: c.deletions, is_code: c.is_code,
+            is_doc: c.is_doc, is_test: c.is_test
+          })),
+          issues: result.issues.map(i => ({
+            severity: i.severity, message: i.message,
+            related_files: i.related_files,
+          })),
+          doc_sync_status: result.docStatus,
+        }, null, 2));
+      } else {
+        console.log(formatReport(result, opts.verbose));
+      }
+
+      process.exitCode = result.passed ? 0 : 1;
+    } catch (error) {
+      printCliError(error, Boolean((opts && opts.json) || error.json));
+    }
+  }
 }
 
 module.exports = { normalizePath, classifyFile, parsePorcelainLine, parseNameStatusLine, identifyModules };

@@ -3,7 +3,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { parseCliArgs, buildReport, hasFatal } = require(path.join(__dirname, '..', '..', 'lib', 'shared.js'));
+const { parseCliArgs, printCliError, buildReport, hasFatal } = require(path.join(__dirname, '..', '..', 'lib', 'shared.js'));
 
 const REQUIRED_FILES = { 'README.md': '模块说明文档', 'DESIGN.md': '设计决策文档' };
 const ALT_SRC_DIRS = ['src', 'lib', 'pkg', 'internal', 'cmd', 'app'];
@@ -153,19 +153,38 @@ function formatReport(r, verbose) {
 }
 
 // CLI
-const opts = parseCliArgs(process.argv);
-const result = scanModule(opts.target);
-const passed = !hasFatal(result.issues);
-
-if (opts.json) {
-  console.log(JSON.stringify({
-    module_path: result.modulePath, passed,
-    error_count: result.issues.filter(i => i.severity === 'error').length,
-    warning_count: result.issues.filter(i => i.severity === 'warning').length,
-    issues: result.issues
-  }, null, 2));
-} else {
-  console.log(formatReport(result, opts.verbose));
+function main(argv = process.argv) {
+  let opts;
+  try {
+    opts = parseCliArgs(argv);
+    if (opts.help) {
+      console.log([
+        '用法: node module_scanner.js [path] [options]',
+        '',
+        '检查模块文档、目录结构与测试文件。path 默认为当前目录。',
+        '  -v, --verbose  显示详细问题与目录结构',
+        '  --json         输出 JSON 报告',
+        '  -h, --help     显示帮助，不执行检查',
+      ].join('\n'));
+      return;
+    }
+    const result = scanModule(opts.target);
+    const passed = !hasFatal(result.issues);
+    if (opts.json) {
+      console.log(JSON.stringify({
+        module_path: result.modulePath, passed,
+        error_count: result.issues.filter(i => i.severity === 'error').length,
+        warning_count: result.issues.filter(i => i.severity === 'warning').length,
+        issues: result.issues,
+      }, null, 2));
+    } else {
+      console.log(formatReport(result, opts.verbose));
+    }
+    process.exitCode = passed ? 0 : 1;
+  } catch (error) {
+    printCliError(error, Boolean(opts?.json || error.json));
+  }
 }
 
-process.exit(passed ? 0 : 1);
+if (require.main === module) main();
+module.exports = { scanModule, main };

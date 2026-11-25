@@ -7,23 +7,79 @@
 
 // --- CLI 参数解析 ---
 
+function createCliError(code, message, json = false) {
+  const error = new Error(message);
+  error.code = code;
+  error.json = json;
+  return error;
+}
+
 function parseCliArgs(argv, extraFlags) {
   const args = argv.slice(2);
-  const result = { target: '.', verbose: false, json: false };
-  if (extraFlags) Object.assign(result, extraFlags);
-
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] === '-v' || args[i] === '--verbose') result.verbose = true;
-    else if (args[i] === '--json') result.json = true;
-    else if (args[i] === '-h' || args[i] === '--help') { result.help = true; }
-    else if (args[i] === '--mode' && args[i + 1]) { result.mode = args[++i]; }
-    else if (args[i] === '--exclude') {
-      result.exclude = result.exclude || [];
-      while (i + 1 < args.length && !args[i + 1].startsWith('-')) result.exclude.push(args[++i]);
-    }
-    else if (!args[i].startsWith('-')) result.target = args[i];
+  const result = { target: '.', verbose: false, json: false, ...extraFlags };
+  const separator = args.indexOf('--');
+  const flags = separator < 0 ? args : args.slice(0, separator);
+  const jsonRequested = flags.includes('--json');
+  // Only options before -- can request help or JSON output.
+  if (flags.includes('-h') || flags.includes('--help')) {
+    return { ...result, help: true, json: jsonRequested };
   }
+  const fail = message => { throw createCliError('INVALID_ARGUMENT', message, jsonRequested); };
+  let targetSeen = false;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '-v' || arg === '--verbose') result.verbose = true;
+    else if (arg === '--json') result.json = true;
+    else if (arg === '--mode') {
+      if (!args[i + 1] || args[i + 1].startsWith('-')) fail('--mode 需要一个值');
+      result.mode = args[++i];
+    } else if (arg === '--exclude') {
+      const values = [];
+      while (i + 1 < args.length && !args[i + 1].startsWith('-')) values.push(args[++i]);
+      if (!values.length) fail('--exclude 需要至少一个目录名');
+      result.exclude = [...(result.exclude || []), ...values];
+    } else if (arg === '--') {
+      const remaining = args.slice(i + 1);
+      if (remaining.length > 1 || (targetSeen && remaining.length)) fail('只能指定一个目标路径');
+      if (remaining.length) {
+        result.target = remaining[0];
+        targetSeen = true;
+      }
+      break;
+    } else if (arg.startsWith('-')) {
+      fail(`未知参数: ${arg}`);
+    } else {
+      if (targetSeen) fail('只能指定一个目标路径');
+      result.target = arg;
+      targetSeen = true;
+    }
+  }
+  if (typeof result.target !== 'string' || result.target.length === 0) fail('目标路径不能为空');
   return result;
+}
+
+function validateDirectory(target) {
+  if (typeof target !== 'string' || target.length === 0) {
+    throw createCliError('INVALID_ARGUMENT', '目标路径不能为空');
+  }
+  const fs = require('fs');
+  const folder = require('path').resolve(target);
+  let stat;
+  try {
+    stat = fs.statSync(folder);
+  } catch (error) {
+    if (error.code === 'ENOENT') throw createCliError('ENOENT', `路径不存在: ${folder}`);
+    throw error;
+  }
+  if (!stat.isDirectory()) throw createCliError('ENOTDIR', `不是目录: ${folder}`);
+  return folder;
+}
+
+function printCliError(error, json = false) {
+  const detail = { code: error.code || 'CLI_ERROR', message: error.message || String(error) };
+  if (json) console.log(JSON.stringify({ passed: false, error: detail }, null, 2));
+  else console.error(`错误 [${detail.code}]: ${detail.message}`);
+  process.exitCode = 1;
 }
 
 // --- 报告格式化 ---
@@ -93,6 +149,6 @@ function hasFatal(issues, fatalLevels) {
 }
 
 module.exports = {
-  parseCliArgs, buildReport, reportHeader, reportIssues,
+  parseCliArgs, validateDirectory, printCliError, createCliError, buildReport, reportHeader, reportIssues,
   reportFooter, countBySeverity, hasFatal, SEP, DASH, ICONS
 };

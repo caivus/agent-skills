@@ -32,6 +32,8 @@ node scripts/security_scanner.js <扫描路径> --json       # JSON 输出
 node scripts/security_scanner.js <扫描路径> --exclude vendor  # 排除目录
 ```
 
+报告保留文件、行号、规则、严重性与修复建议；`line_content` 固定输出 `[redacted]`，包括 JSON 和详细模式均不回显匹配源码，以免报告复制出凭据。目标不存在、不是目录或目录／源文件读取失败时，CLI 返回非零退出码；`--json` 输出结构化错误。有效空目录仍可通过，应同时核对 `files_scanned` 与排除目录。
+
 ## 检测范围
 
 ### 自动检测的漏洞类型

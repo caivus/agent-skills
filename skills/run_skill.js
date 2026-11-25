@@ -15,12 +15,12 @@
  */
 
 const { spawn } = require('child_process');
-const { readdirSync, statSync, writeFileSync, unlinkSync, closeSync, openSync } = require('fs');
+const { readdirSync, unlinkSync, closeSync, openSync } = require('fs');
 const { join, resolve } = require('path');
 const { createHash } = require('crypto');
-const { tmpdir } = require('os');
-
-const IS_WIN = process.platform === 'win32';
+const { tmpdir, constants } = require('os');
+const { setTimeout: wait } = require('timers/promises');
+const { createCliError, printCliError } = require('./tools/lib/shared.js');
 
 function getSkillsDir() {
   const override = process.env.SAGE_SKILLS_DIR;
@@ -29,7 +29,7 @@ function getSkillsDir() {
 }
 
 function discoverSkills(skillsDir) {
-  const found = {};
+  const found = Object.create(null);
   const toolsDir = join(skillsDir, 'tools');
   let entries;
   try { entries = readdirSync(toolsDir).sort(); } catch { return found; }
@@ -37,7 +37,7 @@ function discoverSkills(skillsDir) {
   for (const name of entries) {
     const scriptsDir = join(toolsDir, name, 'scripts');
     let scripts;
-    try { scripts = readdirSync(scriptsDir); } catch { continue; }
+    try { scripts = readdirSync(scriptsDir).sort(); } catch { continue; }
     const jsFile = scripts.find(f => f.endsWith('.js'));
     if (jsFile) found[name] = join(scriptsDir, jsFile);
   }
@@ -46,36 +46,50 @@ function discoverSkills(skillsDir) {
 
 function getScriptPath(skillName) {
   const available = discoverSkills(getSkillsDir());
-  if (!(skillName in available)) {
+  if (!Object.hasOwn(available, skillName)) {
     const names = Object.keys(available).join(', ') || '(无)';
-    console.error(`错误: 未知的 skill '${skillName}'`);
-    console.error(`可用的 skills: ${names}`);
-    process.exit(1);
+    throw createCliError('UNKNOWN_SKILL', `未知的 skill '${skillName}'；可用的 skills: ${names}`);
   }
   return available[skillName];
 }
 
-function sleepMs(ms) {
-  const end = Date.now() + ms;
-  while (Date.now() < end) { /* busy wait */ }
+function optionFlags(args) {
+  const separator = args.indexOf('--');
+  return separator < 0 ? args : args.slice(0, separator);
 }
 
-function acquireTargetLock(args) {
-  const target = args.find(a => !a.startsWith('-')) || process.cwd();
+// Resolve the positional target, never an option's mode/exclusion value.
+function lockTarget(args) {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '--') return args[i + 1] || '.';
+    if (arg === '--mode') { i++; continue; }
+    if (arg === '--exclude') {
+      while (i + 1 < args.length && !args[i + 1].startsWith('-')) i++;
+      continue;
+    }
+    if (!arg.startsWith('-')) return arg || '.';
+  }
+  return '.';
+}
+
+async function acquireTargetLock(args, { timeoutMs = 30000, retryMs = 200 } = {}) {
+  const target = lockTarget(args);
+  const json = optionFlags(args).includes('--json');
   const hash = createHash('md5').update(resolve(target)).digest('hex').slice(0, 12);
   const lockPath = join(tmpdir(), `sage_skill_${hash}.lock`);
-
-  const deadline = Date.now() + 30000;
+  const deadline = Date.now() + timeoutMs;
   let first = true;
   while (true) {
     try {
       const fd = openSync(lockPath, 'wx');
       return { fd, lockPath };
-    } catch (e) {
-      if (e.code !== 'EEXIST') return { fd: null, lockPath: null };
-      if (first) { console.log(`⏳ 等待锁释放: ${target}`); first = false; }
-      if (Date.now() >= deadline) { console.error(`⏳ 等待锁超时: ${target}`); process.exit(1); }
-      sleepMs(200);
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+      if (Date.now() >= deadline) throw createCliError('LOCK_TIMEOUT', `等待锁超时: ${target}`);
+      if (first && !json) console.error(`等待锁释放: ${target}`);
+      first = false;
+      await wait(retryMs);
     }
   }
 }
@@ -89,41 +103,50 @@ function releaseLock({ fd, lockPath }) {
   }
 }
 
-function main() {
-  const args = process.argv.slice(2);
-
-  if (args.length === 0 || args[0] === '-h' || args[0] === '--help') {
-    console.log(__filename.split('/').pop() + ' <skill_name> [args...]');
-    process.exit(args.length === 0 ? 1 : 0);
-  }
-
-  const skillName = args[0];
-  const scriptPath = getScriptPath(skillName);
-  const scriptArgs = args.slice(1);
-
-  const lock = acquireTargetLock(scriptArgs);
-
-  const child = spawn(process.execPath, [scriptPath, ...scriptArgs], {
-    stdio: 'inherit',
-  });
-
-  child.on('close', (code) => {
-    releaseLock(lock);
-    process.exit(code || 0);
-  });
-
-  child.on('error', (err) => {
-    console.error(`执行错误: ${err.message}`);
-    releaseLock(lock);
-    process.exit(1);
-  });
-
-  process.on('SIGINT', () => {
-    console.log('\n已取消');
-    child.kill('SIGINT');
-    releaseLock(lock);
-    process.exit(130);
+function runChild(scriptPath, args) {
+  return new Promise((resolveChild, rejectChild) => {
+    const child = spawn(process.execPath, [scriptPath, ...args], { stdio: 'inherit' });
+    const interrupt = () => child.kill('SIGINT');
+    const terminate = () => child.kill('SIGTERM');
+    process.on('SIGINT', interrupt);
+    process.on('SIGTERM', terminate);
+    const cleanup = () => {
+      process.removeListener('SIGINT', interrupt);
+      process.removeListener('SIGTERM', terminate);
+    };
+    child.once('error', error => { cleanup(); rejectChild(error); });
+    child.once('close', (code, signal) => {
+      cleanup();
+      // A child terminated by a signal must never be reported as successful.
+      resolveChild(code === null ? 128 + (constants.signals[signal] || 1) : code);
+    });
   });
 }
 
-main();
+async function main(argv = process.argv) {
+  const args = argv.slice(2);
+  if (args.length === 0 || args[0] === '-h' || args[0] === '--help') {
+    console.log(__filename.split(/[\\/]/).pop() + ' <skill_name> [args...]');
+    process.exitCode = args.length === 0 ? 1 : 0;
+    return;
+  }
+
+  const scriptArgs = args.slice(1);
+  const flags = optionFlags(scriptArgs);
+  let lock;
+  try {
+    const scriptPath = getScriptPath(args[0]);
+    // Help must not wait for or create a target lock.
+    if (!flags.includes('--help') && !flags.includes('-h')) {
+      lock = await acquireTargetLock(scriptArgs);
+    }
+    process.exitCode = await runChild(scriptPath, scriptArgs);
+  } catch (error) {
+    printCliError(error, flags.includes('--json'));
+  } finally {
+    if (lock) releaseLock(lock);
+  }
+}
+
+if (require.main === module) main();
+module.exports = { discoverSkills, getScriptPath, lockTarget, acquireTargetLock, releaseLock, main };

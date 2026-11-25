@@ -73,14 +73,15 @@ node skills/run_skill.js verify-quality /path/to/source --json
 node skills/run_skill.js verify-security /path/to/source --json
 ```
 
-变更分析需要在待分析的 Git 仓库中运行：
+变更分析可直接指定待分析的 Git 仓库，也可省略目标以使用当前目录：
 
 ```bash
-cd /path/to/your-project
-node /path/to/agent-skills/skills/run_skill.js verify-change --mode staged --json
+node skills/run_skill.js verify-change /path/to/your-project --mode staged --json
 ```
 
-`gen-docs` 默认保留已存在的文档；`--force` 会覆盖目标文档，使用前确认目标路径。
+`gen-docs` 默认保留已存在的文档；`--readme-only` 或 `--design-only` 只生成选中的一份，两者不能同时使用。`--force` 仅覆盖选中的目标文档，使用前确认目标路径。
+
+所有工具均支持 `--help` / `-h`；帮助模式不扫描或写入目标，即使同时传入 `--json` 也只输出帮助。操作失败以非零退出码结束；`--json` 模式下错误报告包含 `passed: false`、`error.code` 和 `error.message`。
 
 ## 目录结构
 
@@ -93,6 +94,7 @@ agent-skills/
 │   ├── orchestration/          # 多 Agent 协作说明
 │   ├── run_skill.js            # 工具运行入口
 │   └── SKILL.md                # 领域总入口
+├── tests/                     # Node.js 内建 CLI 回归测试
 ├── CATALOG.md
 ├── NOTICE.md
 ├── LICENSE
@@ -103,23 +105,28 @@ agent-skills/
 
 - 文档中部分工具名和协作 API 面向 Claude Code 或 Codex，使用时应映射到当前助手真实支持的工具；文档本身不会创建这些能力。
 - 附带检查工具主要基于规则和启发式分析，不等同于编译器、类型检查器、完整测试套件或完整漏洞分析引擎。
-- 目录与技术标识保持稳定；本次整理不重写工具实现，也不承诺所有参考示例已在每种宿主环境运行验证。
+- 目录与技术标识保持稳定；初次称呼整理未改脚本，后续另行修复 CLI 参数、失败处理和报告原文披露问题。参考示例未在每种宿主环境逐一验证。
 
 ## 已验证行为与已知问题
 
-7 个 JavaScript 文件均通过 `node --check`。在独立的小型测试目录中，文档生成、已有文档保留、模块检查、质量检查、安全检查、工具调度，以及有效 Git 仓库的工作区和暂存区分析均完成了基础运行测试；这不包含全面的检测准确率评估。
+7 个工具 JavaScript 文件均通过 `node --check`。回归测试使用 Node.js 内建的 `node:test`，无需安装第三方依赖；测试仅在临时目录中生成文件和本地 Git 仓库，不访问远程仓库。
 
-以下原有行为已复现，此次称呼整理未修改工具实现：
+```bash
+node --test --test-concurrency=1
+```
 
-| 工具／场景 | 当前行为 |
+原审计复现的问题现已修复：
+
+| 工具／场景 | 修复后行为 |
 |---|---|
-| `gen-docs --readme-only` / `--design-only` | 参数未实际生效，仍生成两份文档。 |
-| `verify-quality` / `verify-security` 的目标路径不存在 | 可能返回退出码 0、`passed: true`，但扫描文件数为 0。 |
-| `verify-change` 在非 Git 仓库中运行 | Git 错误被转为空结果，可能报告通过。 |
-| 模块检查、质量检查、变更分析的 `--help` | 未正常转入帮助输出；与 `--json` 组合时仍执行分析。 |
-| 安全扫描的 JSON 报告 | `line_content` 含匹配的源码原文；若源码中有凭据，报告也会包含相应片段。 |
+| `gen-docs --readme-only` / `--design-only` | 只生成所选文档；同时使用两种选择参数时报错。不加 `--force` 时用独占创建保护已有文件。 |
+| `verify-quality` / `verify-security` 目标不存在、不是目录或读取失败 | 非零退出；JSON 错误明确为 `passed: false`，不再伪装为空扫描通过。 |
+| `verify-change` 的目标或 Git 命令无效 | 非零退出并报告错误。支持显式目标；`working` / `staged` 支持尚无提交的仓库，`committed` 仍要求两次提交。 |
+| 各工具 `--help` / `-h` | 优先显示帮助，不扫描或写入目标；未知参数和缺少参数值会报错。 |
+| 安全扫描报告 | `line_content` 固定为 `[redacted]`，JSON 和详细文本均不回显匹配行；保留文件、行号、规则、严重性和建议。 |
+| 工具调度与锁 | 等待提示不污染 JSON；帮助不创建目标锁；加锁失败和子进程被信号终止不再被当作成功。 |
 
-解释检查结果时应同时核对目标路径、Git 仓库状态和扫描文件数，不能只依据退出码或 `passed` 字段。
+有效空目录、没有支持的源文件或源文件被排除时仍可能扫描 0 个文件并通过；应结合目标路径、扫描文件数和排除目录解释报告。回归测试验证 CLI 行为与报告输出，不代表完成所有检测规则的准确率评估。
 
 ## 许可与来源
 

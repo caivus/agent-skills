@@ -3,6 +3,33 @@
 
 const fs = require('fs');
 const path = require('path');
+const { buildReport, countBySeverity, parseCliArgs, validateDirectory, printCliError } = require(
+  path.join(__dirname, '..', '..', 'lib', 'shared.js')
+);
+
+function throwScanError(action, target, cause) {
+  const detail = cause && cause.message ? `: ${cause.message}` : '';
+  const error = new Error(`${action}: ${target}${detail}`);
+  error.code = (cause && cause.code) || 'SCAN_ERROR';
+  error.cause = cause;
+  throw error;
+}
+
+function readSourceFile(filePath) {
+  try {
+    return fs.readFileSync(filePath, 'utf-8');
+  } catch (error) {
+    throwScanError('无法读取文件', filePath, error);
+  }
+}
+
+function readDirectoryEntries(dir) {
+  try {
+    return fs.readdirSync(dir, { withFileTypes: true });
+  } catch (error) {
+    throwScanError('无法遍历目录', dir, error);
+  }
+}
 
 const SEVERITY_ORDER = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
 
@@ -165,8 +192,7 @@ const DEFAULT_EXCLUDES = [
 function scanFile(filePath, rules) {
   const findings = [];
   const ext = path.extname(filePath).toLowerCase();
-  let content;
-  try { content = fs.readFileSync(filePath, 'utf-8'); } catch { return findings; }
+  const content = readSourceFile(filePath);
   const lines = content.split('\n');
 
   for (const rule of rules) {
@@ -189,10 +215,11 @@ function scanFile(filePath, rules) {
           rule.excludePattern.lastIndex = 0; continue;
         }
         findings.push({
+          rule_id: rule.id,
           severity: rule.severity, category: rule.category,
           message: rule.message, file_path: filePath,
           line_number: i + 1,
-          line_content: stripped.slice(0, 100),
+          line_content: '[redacted]',
           recommendation: rule.recommendation,
         });
       }
@@ -203,10 +230,9 @@ function scanFile(filePath, rules) {
 
 function walkDir(dir, excludeDirs) {
   const results = [];
-  let entries;
-  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return results; }
+  const entries = readDirectoryEntries(dir);
   for (const entry of entries) {
-    if (excludeDirs.includes(entry.name)) continue;
+    if (excludeDirs.has(entry.name)) continue;
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) { results.push(...walkDir(full, excludeDirs)); }
     else if (entry.isFile()) {
@@ -219,9 +245,12 @@ function walkDir(dir, excludeDirs) {
 }
 
 function scanDirectory(scanPath, excludeDirs) {
-  const resolved = path.resolve(scanPath);
+  const resolved = validateDirectory(scanPath);
+  const excluded = excludeDirs instanceof Set
+    ? excludeDirs
+    : new Set(excludeDirs || DEFAULT_EXCLUDES);
   const findings = [];
-  const files = walkDir(resolved, excludeDirs);
+  const files = walkDir(resolved, excluded);
   for (const f of files) findings.push(...scanFile(f, SECURITY_RULES));
   findings.sort((a, b) =>
     (SEVERITY_ORDER[a.severity] ?? 9) - (SEVERITY_ORDER[b.severity] ?? 9));
@@ -230,10 +259,6 @@ function scanDirectory(scanPath, excludeDirs) {
   );
   return { scan_path: resolved, files_scanned: files.length, passed, findings };
 }
-
-const { buildReport, countBySeverity, parseCliArgs } = require(
-  path.join(__dirname, '..', '..', 'lib', 'shared.js')
-);
 
 function formatReport(result, verbose) {
   const counts = countBySeverity(result.findings);
@@ -250,34 +275,52 @@ function formatReport(result, verbose) {
 }
 
 
-function main() {
-  const opts = parseCliArgs(process.argv, { exclude: [] });
-  if (opts.help) {
-    console.log('Usage: security_scanner.js [path] [-v] [--json] [--exclude dir1 dir2]');
-    process.exit(0);
-  }
-  const scanPath = opts.target;
-  const verbose = opts.verbose;
-  const jsonOut = opts.json;
-  const excludeDirs = [...DEFAULT_EXCLUDES, ...opts.exclude];
-  const result = scanDirectory(scanPath, excludeDirs);
+function printHelp() {
+  console.log([
+    'Usage: security_scanner.js [path] [-v] [--json] [--exclude dir1 dir2]',
+    '',
+    '扫描代码中的已配置安全风险；path 默认为当前目录。',
+    '  -v, --verbose       显示详细问题与修复建议',
+    '  --json              输出 JSON 报告',
+    '  --exclude dir1 dir2 排除指定目录',
+    '  -h, --help          显示帮助，不执行扫描',
+    '',
+    '出于安全考虑，报告不会输出源码行或匹配值；仅保留文件、行号、规则和建议。',
+  ].join('\n'));
+}
 
-  if (jsonOut) {
-    console.log(JSON.stringify({
-      scan_path: result.scan_path,
-      files_scanned: result.files_scanned,
-      passed: result.passed,
-      counts: countBySeverity(result.findings),
-      findings: result.findings,
-    }, null, 2));
-  } else {
-    console.log(formatReport(result, verbose));
+function main(argv = process.argv) {
+  let opts;
+  try {
+    opts = parseCliArgs(argv, { exclude: [] });
+    if (opts.help) {
+      printHelp();
+      return;
+    }
+    const verbose = opts.verbose;
+    const jsonOut = opts.json;
+    const excludeDirs = new Set([...DEFAULT_EXCLUDES, ...(opts.exclude || [])]);
+    const result = scanDirectory(opts.target, excludeDirs);
+
+    if (jsonOut) {
+      console.log(JSON.stringify({
+        scan_path: result.scan_path,
+        files_scanned: result.files_scanned,
+        passed: result.passed,
+        counts: countBySeverity(result.findings),
+        findings: result.findings,
+      }, null, 2));
+    } else {
+      console.log(formatReport(result, verbose));
+    }
+    process.exitCode = result.passed ? 0 : 1;
+  } catch (error) {
+    printCliError(error, Boolean(opts?.json || error.json));
   }
-  process.exit(result.passed ? 0 : 1);
 }
 
 if (require.main === module) {
   main();
 }
 
-module.exports = { scanFile, SECURITY_RULES };
+module.exports = { scanFile, scanDirectory, SECURITY_RULES, main };

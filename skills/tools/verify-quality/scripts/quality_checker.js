@@ -3,7 +3,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { parseCliArgs, buildReport, hasFatal } = require(path.join(__dirname, '..', '..', 'lib', 'shared.js'));
+const { parseCliArgs, buildReport, hasFatal, validateDirectory, printCliError } = require(path.join(__dirname, '..', '..', 'lib', 'shared.js'));
 
 // 质量规则配置
 const MAX_LINE_LENGTH = 120;
@@ -23,6 +23,30 @@ const COMMENT_PREFIXES = {
 
 // --- Analysis ---
 
+function throwScanError(action, target, cause) {
+  const detail = cause && cause.message ? `: ${cause.message}` : '';
+  const error = new Error(`${action}: ${target}${detail}`);
+  error.code = (cause && cause.code) || 'SCAN_ERROR';
+  error.cause = cause;
+  throw error;
+}
+
+function readSourceFile(filePath) {
+  try {
+    return fs.readFileSync(filePath, 'utf-8');
+  } catch (error) {
+    throwScanError('无法读取文件', filePath, error);
+  }
+}
+
+function readDirectoryEntries(dir) {
+  try {
+    return fs.readdirSync(dir, { withFileTypes: true });
+  } catch (error) {
+    throwScanError('无法遍历目录', dir, error);
+  }
+}
+
 function analyzeGenericFile(filePath) {
   const metrics = {
     path: filePath, lines: 0, code_lines: 0, comment_lines: 0,
@@ -30,10 +54,7 @@ function analyzeGenericFile(filePath) {
     max_complexity: 0, avg_function_length: 0,
   };
   const issues = [];
-  let content;
-  try {
-    content = fs.readFileSync(filePath, 'utf-8');
-  } catch { return { metrics, issues }; }
+  const content = readSourceFile(filePath);
 
   const lines = content.split('\n');
   metrics.lines = lines.length;
@@ -80,17 +101,7 @@ function analyzePythonFile(filePath) {
     max_complexity: 0, avg_function_length: 0,
   };
   const issues = [];
-  let content;
-  try {
-    content = fs.readFileSync(filePath, 'utf-8');
-  } catch (e) {
-    issues.push({
-      severity: 'error', category: '文件',
-      message: `无法读取文件: ${e.message}`,
-      file_path: filePath, line_number: null, suggestion: null,
-    });
-    return { metrics, issues };
-  }
+  const content = readSourceFile(filePath);
 
   const lines = content.split('\n');
   metrics.lines = lines.length;
@@ -244,8 +255,10 @@ function analyzePythonFile(filePath) {
 // --- Directory scan ---
 
 function scanDirectory(scanPath, excludeDirs) {
-  const resolved = path.resolve(scanPath);
-  const exclude = excludeDirs || EXCLUDE_DIRS;
+  const resolved = validateDirectory(scanPath);
+  const exclude = excludeDirs instanceof Set
+    ? excludeDirs
+    : new Set(excludeDirs || EXCLUDE_DIRS);
   const result = {
     scan_path: resolved, files_scanned: 0,
     total_lines: 0, total_code_lines: 0,
@@ -253,8 +266,7 @@ function scanDirectory(scanPath, excludeDirs) {
   };
 
   function walk(dir) {
-    let entries;
-    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    const entries = readDirectoryEntries(dir);
     for (const entry of entries) {
       if (exclude.has(entry.name)) continue;
       const full = path.join(dir, entry.name);
@@ -310,28 +322,60 @@ function formatReport(result, verbose) {
 
 // --- CLI ---
 
-function main() {
-  const opts = parseCliArgs(process.argv);
-
-  const result = scanDirectory(opts.target);
-
-  if (opts.json) {
-    const output = {
-      scan_path: result.scan_path,
-      files_scanned: result.files_scanned,
-      total_lines: result.total_lines,
-      total_code_lines: result.total_code_lines,
-      passed: passed(result),
-      error_count: result.issues.filter(i => i.severity === 'error').length,
-      warning_count: result.issues.filter(i => i.severity === 'warning').length,
-      issues: result.issues
-    };
-    console.log(JSON.stringify(output, null, 2));
-  } else {
-    console.log(formatReport(result, opts.verbose));
-  }
-
-  process.exit(passed(result) ? 0 : 1);
+function printHelp() {
+  console.log([
+    '用法: node quality_checker.js [path] [options]',
+    '',
+    '检查代码质量；path 默认为当前目录。',
+    '  -v, --verbose       显示详细问题与复杂度信息',
+    '  --json              输出 JSON 报告',
+    '  --exclude dir1 dir2 排除指定目录（默认目录仍会排除）',
+    '  -h, --help          显示帮助，不执行检查',
+  ].join('\n'));
 }
 
-main();
+function main(argv = process.argv) {
+  let opts;
+  try {
+    opts = parseCliArgs(argv);
+    if (opts.help) {
+      printHelp();
+      return;
+    }
+
+    const excludeDirs = opts.exclude
+      ? new Set([...EXCLUDE_DIRS, ...opts.exclude])
+      : EXCLUDE_DIRS;
+    const result = scanDirectory(opts.target, excludeDirs);
+
+    if (opts.json) {
+      const output = {
+        scan_path: result.scan_path,
+        files_scanned: result.files_scanned,
+        total_lines: result.total_lines,
+        total_code_lines: result.total_code_lines,
+        passed: passed(result),
+        error_count: result.issues.filter(i => i.severity === 'error').length,
+        warning_count: result.issues.filter(i => i.severity === 'warning').length,
+        issues: result.issues,
+      };
+      console.log(JSON.stringify(output, null, 2));
+    } else {
+      console.log(formatReport(result, opts.verbose));
+    }
+
+    process.exitCode = passed(result) ? 0 : 1;
+  } catch (error) {
+    printCliError(error, Boolean(opts?.json || error.json));
+  }
+}
+
+if (require.main === module) main();
+
+module.exports = {
+  analyzeGenericFile,
+  analyzePythonFile,
+  scanDirectory,
+  formatReport,
+  main,
+};
